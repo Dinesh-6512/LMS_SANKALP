@@ -1,0 +1,688 @@
+const { CourseTest, TestQuestion, TestQuestionOption, TestAnswer, TestAttempt, Certificate, ActivityLog, Course, User } = require('../models');
+const { buildShortAnswerOptions, buildTrueFalseOptions } = require('../utils/answerGrading');
+const logger = require('../utils/logger');
+const { AppError } = require('../middleware/errorHandler');
+
+/**
+ * Get tests for a course
+ */
+const getTestsByCourse = async (req, res, next) => {
+  try {
+    const { courseId } = req.params;
+
+    const tests = await CourseTest.findAll({
+      where: { 
+        course_id: courseId,
+        is_active: true 
+      },
+      order: [['id', 'ASC']]
+    });
+
+    res.json({
+      success: true,
+      message: 'Tests retrieved successfully',
+      data: {
+        tests: tests.map(test => test.getPublicInfo())
+      }
+    });
+  } catch (error) {
+    logger.error('Get tests by course error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Get test by ID
+ */
+const getTestById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const test = await CourseTest.findByPk(id, {
+      include: [
+        {
+          model: Course,
+          as: 'course',
+          attributes: ['id', 'title']
+        }
+      ]
+    });
+
+    if (!test) {
+      throw new AppError('Test not found', 404);
+    }
+
+    res.json({
+      success: true,
+      message: 'Test retrieved successfully',
+      data: {
+        test: test.getPublicInfo()
+      }
+    });
+  } catch (error) {
+    logger.error('Get test by ID error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Create a new test
+ */
+const createTest = async (req, res, next) => {
+  try {
+    const { 
+      course_id, 
+      title, 
+      description, 
+      passing_score, 
+      instructions,
+      test_type,
+      chapter_id,
+      time_limit_minutes,
+      max_attempts
+    } = req.body;
+
+    // Verify course exists
+    const course = await Course.findByPk(course_id);
+    if (!course) {
+      throw new AppError('Course not found', 404);
+    }
+
+    const resolvedTestType = test_type || 'final_exam';
+
+    const test = await CourseTest.create({
+      course_id,
+      title,
+      description,
+      passing_score: passing_score || 70,
+      instructions,
+      test_type: resolvedTestType,
+      chapter_id: chapter_id || null,
+      time_limit_minutes: time_limit_minutes || null,
+      max_attempts: max_attempts ?? (resolvedTestType === 'chapter_quiz' ? 3 : null),
+      created_by: req.user.id,
+      is_active: true
+    });
+
+    if (resolvedTestType === 'chapter_quiz' && chapter_id) {
+      await require('../models').CourseChapter.update(
+        { test_id: test.id },
+        { where: { id: chapter_id, course_id } }
+      );
+    }
+
+    logger.info(`Test "${title}" created for course ${course_id} by ${req.user.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Test created successfully',
+      data: {
+        test: test.getPublicInfo()
+      }
+    });
+  } catch (error) {
+    logger.error('Create test error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Update a test
+ */
+const updateTest = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    const test = await CourseTest.findByPk(id);
+    if (!test) {
+      throw new AppError('Test not found', 404);
+    }
+
+    await test.update(updateData);
+
+    logger.info(`Test ${id} updated by ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Test updated successfully',
+      data: {
+        test: test.getPublicInfo()
+      }
+    });
+  } catch (error) {
+    logger.error('Update test error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Delete a test
+ */
+const deleteTest = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const test = await CourseTest.findByPk(id);
+    if (!test) {
+      throw new AppError('Test not found', 404);
+    }
+
+    // Get all questions for this test
+    const questions = await TestQuestion.findAll({
+      where: { test_id: id }
+    });
+
+    // Delete all test answers for each question first
+    for (const question of questions) {
+      await TestAnswer.destroy({
+        where: { question_id: question.id }
+      });
+    }
+
+    // Delete all test attempts for this test
+    const attempts = await TestAttempt.findAll({
+      where: { test_id: id }
+    });
+
+    // Delete all certificates that reference these test attempts
+    for (const attempt of attempts) {
+      await Certificate.destroy({
+        where: { test_attempt_id: attempt.id }
+      });
+    }
+
+    // Delete all activity logs that reference this test
+    await ActivityLog.destroy({
+      where: { test_id: id }
+    });
+
+    // Now delete the test attempts
+    await TestAttempt.destroy({
+      where: { test_id: id }
+    });
+
+    // Now delete the test (this will cascade to questions and options)
+    await test.destroy();
+
+    logger.info(`Test ${id} deleted by ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Test deleted successfully'
+    });
+  } catch (error) {
+    logger.error('Delete test error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Get questions for a test
+ */
+const getTestQuestions = async (req, res, next) => {
+  try {
+    const { testId } = req.params;
+
+    const test = await CourseTest.findByPk(testId);
+    if (!test) {
+      throw new AppError('Test not found', 404);
+    }
+
+    // First get questions
+    const questions = await TestQuestion.findAll({
+      where: { 
+        test_id: testId,
+        is_active: true 
+      },
+      order: [['id', 'ASC']]
+    });
+
+    console.log('Raw questions found:', questions.length);
+
+    // Then get options for each question
+    const questionsWithOptions = await Promise.all(
+      questions.map(async (question) => {
+        const options = await TestQuestionOption.findAll({
+          where: { question_id: question.id },
+          order: [['id', 'ASC']]
+        });
+        
+        console.log(`Question ${question.id} has ${options.length} options`);
+        options.forEach((opt, index) => {
+          console.log(`  Option ${index + 1}: "${opt.option_text}" (correct: ${opt.is_correct})`);
+        });
+        
+        return {
+          ...question.toJSON(),
+          options: options.map(opt => ({
+            id: opt.id,
+            option_text: opt.option_text,
+            is_correct: opt.is_correct,
+          }))
+        };
+      })
+    );
+
+    console.log('=== GET QUESTIONS DEBUG ===');
+    console.log('Questions found:', questionsWithOptions.length);
+    questionsWithOptions.forEach((q, index) => {
+      console.log(`Question ${index + 1}: ${q.question_text}`);
+      console.log(`  Options: ${q.options ? q.options.length : 0}`);
+      if (q.options) {
+        q.options.forEach((opt, optIndex) => {
+          console.log(`    Option ${optIndex + 1}: ${opt.option_text} (Correct: ${opt.is_correct})`);
+        });
+      }
+    });
+    console.log('===========================');
+
+    res.json({
+      success: true,
+      message: 'Questions retrieved successfully',
+      data: {
+        test: test.getPublicInfo(),
+        questions: questionsWithOptions
+      }
+    });
+  } catch (error) {
+    logger.error('Get test questions error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Create a question
+ */
+const createQuestion = async (req, res, next) => {
+  try {
+    const { 
+      test_id, 
+      question_text, 
+      question_type, 
+      points, 
+      explanation,
+      options = []
+    } = req.body;
+
+    console.log('=== CREATE QUESTION DEBUG ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Options received:', options);
+    console.log('Question type:', question_type);
+    console.log('Options length:', options ? options.length : 'undefined');
+    console.log('Options details:', options ? options.map(opt => ({ 
+      text: opt.option_text, 
+      correct: opt.is_correct,
+      raw: opt 
+    })) : 'none');
+    console.log('============================');
+
+    const test = await CourseTest.findByPk(test_id);
+    if (!test) {
+      throw new AppError('Test not found', 404);
+    }
+
+    const questionType = question_type || 'multiple_choice';
+    let optionsToCreate = options || [];
+
+    if (questionType === 'multiple_choice') {
+      if (!options || options.length === 0) {
+        throw new AppError('Multiple choice questions must have at least 2 options', 400);
+      }
+
+      const validOptions = options.filter(opt => opt.option_text && opt.option_text.trim() !== '');
+      if (validOptions.length < 2) {
+        throw new AppError('Multiple choice questions must have at least 2 valid options', 400);
+      }
+
+      const hasCorrectAnswer = validOptions.some(opt => opt.is_correct);
+      if (!hasCorrectAnswer) {
+        throw new AppError('At least one option must be marked as correct', 400);
+      }
+      optionsToCreate = validOptions;
+    } else if (questionType === 'short_answer') {
+      const accepted = req.body.accepted_answers ?? options;
+      optionsToCreate = buildShortAnswerOptions(accepted);
+      if (optionsToCreate.length === 0) {
+        throw new AppError('Short answer questions must have at least one accepted answer', 400);
+      }
+    } else if (questionType === 'true_false') {
+      const correctValue = req.body.correct_true_false;
+      if (correctValue === undefined || correctValue === null || correctValue === '') {
+        throw new AppError('Please select the correct True/False answer', 400);
+      }
+      optionsToCreate = buildTrueFalseOptions(correctValue);
+    }
+
+    const question = await TestQuestion.create({
+      test_id,
+      question_text,
+      question_type: questionType,
+      points: points || 1,
+      explanation,
+      is_active: true
+    });
+
+    console.log('Question created with ID:', question.id);
+
+    if (optionsToCreate.length > 0) {
+      console.log('Creating options for question:', question.id);
+      const optionPromises = optionsToCreate.map((option) =>
+        TestQuestionOption.create({
+          question_id: question.id,
+          option_text: option.option_text.trim(),
+          is_correct: option.is_correct || false,
+        })
+      );
+
+      await Promise.all(optionPromises);
+    } else {
+      console.log('No options to create. Question type:', questionType);
+    }
+
+    // Fetch the question with options for response
+    const questionWithOptions = await TestQuestion.findByPk(question.id, {
+      include: [
+        {
+          model: TestQuestionOption,
+          as: 'options',
+          attributes: ['id', 'option_text', 'is_correct']
+        }
+      ]
+    });
+
+    logger.info(`Question created for test ${test_id} by ${req.user.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Question created successfully',
+      data: {
+        question: questionWithOptions.toJSON()
+      }
+    });
+  } catch (error) {
+    logger.error('Create question error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Update a question
+ */
+const updateQuestion = async (req, res, next) => {
+  try {
+    const { questionId } = req.params;
+    const { options, ...questionUpdateData } = req.body;
+
+    console.log('=== UPDATE QUESTION DEBUG ===');
+    console.log('Question ID:', questionId);
+    console.log('Question data:', JSON.stringify(questionUpdateData, null, 2));
+    console.log('Options received:', options);
+    console.log('Options length:', options ? options.length : 'undefined');
+    if (options) {
+      options.forEach((opt, index) => {
+        console.log(`  Option ${index + 1}:`, opt);
+      });
+    }
+    console.log('============================');
+
+    const question = await TestQuestion.findByPk(questionId);
+    if (!question) {
+      throw new AppError('Question not found', 404);
+    }
+
+    const questionType = questionUpdateData.question_type || question.question_type;
+    let optionsToSave = options;
+
+    if (options !== undefined) {
+      if (questionType === 'multiple_choice') {
+        const validOptions = options.filter(opt => opt.option_text && opt.option_text.trim() !== '');
+        if (validOptions.length < 2) {
+          throw new AppError('Question must have at least 2 valid options', 400);
+        }
+        const hasCorrectAnswer = validOptions.some(opt => opt.is_correct);
+        if (!hasCorrectAnswer) {
+          throw new AppError('At least one option must be marked as correct', 400);
+        }
+        optionsToSave = validOptions;
+      } else if (questionType === 'short_answer') {
+        const accepted = req.body.accepted_answers ?? options;
+        optionsToSave = buildShortAnswerOptions(accepted);
+        if (optionsToSave.length === 0) {
+          throw new AppError('Short answer questions must have at least one accepted answer', 400);
+        }
+      } else if (questionType === 'true_false') {
+        const correctValue = req.body.correct_true_false;
+        if (correctValue === undefined || correctValue === null || correctValue === '') {
+          throw new AppError('Please select the correct True/False answer', 400);
+        }
+        optionsToSave = buildTrueFalseOptions(correctValue);
+      }
+    }
+
+    // Update question fields
+    await question.update(questionUpdateData);
+
+    // Handle options if provided
+    if (optionsToSave && Array.isArray(optionsToSave)) {
+      const validOptions = optionsToSave.filter(opt => opt.option_text && opt.option_text.trim() !== '');
+
+      // Get existing options
+      const existingOptions = await TestQuestionOption.findAll({
+        where: { question_id: questionId }
+      });
+
+      // For short_answer / true_false, replace all options
+      if (questionType === 'short_answer' || questionType === 'true_false') {
+        for (const opt of existingOptions) {
+          await opt.destroy();
+        }
+        for (const newOption of validOptions) {
+          await TestQuestionOption.create({
+            question_id: questionId,
+            option_text: newOption.option_text.trim(),
+            is_correct: newOption.is_correct || false
+          });
+        }
+      } else {
+        // Multiple choice: update/create/delete as before
+        if (validOptions.length < 2) {
+          throw new AppError('Question must have at least 2 valid options', 400);
+        }
+
+        const hasCorrectAnswer = validOptions.some(opt => opt.is_correct);
+        if (!hasCorrectAnswer) {
+          throw new AppError('At least one option must be marked as correct', 400);
+        }
+
+        const updatedOptionIds = validOptions
+          .filter(opt => opt.id)
+          .map(opt => opt.id);
+
+        const optionsToDelete = existingOptions.filter(opt => !updatedOptionIds.includes(opt.id));
+        for (const optToDelete of optionsToDelete) {
+          await optToDelete.destroy();
+        }
+
+        for (const newOption of validOptions) {
+          if (newOption.id) {
+            const existingOption = existingOptions.find(opt => opt.id === newOption.id);
+            if (existingOption) {
+              await existingOption.update({
+                option_text: newOption.option_text.trim(),
+                is_correct: newOption.is_correct || false
+              });
+            }
+          } else {
+            await TestQuestionOption.create({
+              question_id: questionId,
+              option_text: newOption.option_text.trim(),
+              is_correct: newOption.is_correct || false
+            });
+          }
+        }
+      }
+    }
+
+    // Fetch the updated question with options for response
+    const updatedQuestion = await TestQuestion.findByPk(questionId, {
+      include: [
+        {
+          model: TestQuestionOption,
+          as: 'options',
+          attributes: ['id', 'option_text', 'is_correct']
+        }
+      ]
+    });
+
+    logger.info(`Question ${questionId} updated by ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Question updated successfully',
+      data: {
+        question: updatedQuestion.toJSON()
+      }
+    });
+  } catch (error) {
+    logger.error('Update question error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Delete a question
+ */
+const deleteQuestion = async (req, res, next) => {
+  try {
+    const { questionId } = req.params;
+
+    const question = await TestQuestion.findByPk(questionId);
+    if (!question) {
+      throw new AppError('Question not found', 404);
+    }
+
+    // Delete all test answers for this question first
+    await TestAnswer.destroy({
+      where: { question_id: questionId }
+    });
+
+    // Now delete the question (this will cascade to options)
+    await question.destroy();
+
+    logger.info(`Question ${questionId} deleted by ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Question deleted successfully'
+    });
+  } catch (error) {
+    logger.error('Delete question error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Add option to question
+ */
+const addOption = async (req, res, next) => {
+  try {
+    const { questionId } = req.params;
+    const { option_text, is_correct } = req.body;
+
+    const question = await TestQuestion.findByPk(questionId);
+    if (!question) {
+      throw new AppError('Question not found', 404);
+    }
+
+    const option = await TestQuestionOption.create({
+      question_id: questionId,
+      option_text,
+      is_correct: is_correct || false,
+    });
+
+    logger.info(`Option added to question ${questionId} by ${req.user.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Option added successfully',
+      data: {
+        option: option.getPublicInfo()
+      }
+    });
+  } catch (error) {
+    logger.error('Add option error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Update option
+ */
+const updateOption = async (req, res, next) => {
+  try {
+    const { optionId } = req.params;
+    const updateData = req.body;
+
+    const option = await TestQuestionOption.findByPk(optionId);
+    if (!option) {
+      throw new AppError('Option not found', 404);
+    }
+
+    await option.update(updateData);
+
+    logger.info(`Option ${optionId} updated by ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Option updated successfully',
+      data: {
+        option: option.getPublicInfo()
+      }
+    });
+  } catch (error) {
+    logger.error('Update option error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Delete option
+ */
+const deleteOption = async (req, res, next) => {
+  try {
+    const { optionId } = req.params;
+
+    const option = await TestQuestionOption.findByPk(optionId);
+    if (!option) {
+      throw new AppError('Option not found', 404);
+    }
+
+    await option.destroy();
+
+    logger.info(`Option ${optionId} deleted by ${req.user.email}`);
+
+    res.json({
+      success: true,
+      message: 'Option deleted successfully'
+    });
+  } catch (error) {
+    logger.error('Delete option error:', error);
+    next(error);
+  }
+};
+
+module.exports = {
+  getTestsByCourse,
+  getTestById,
+  createTest,
+  updateTest,
+  deleteTest,
+  getTestQuestions,
+  createQuestion,
+  updateQuestion,
+  deleteQuestion,
+  addOption,
+  updateOption,
+  deleteOption
+};

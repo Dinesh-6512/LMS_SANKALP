@@ -1,0 +1,183 @@
+import { motion } from 'framer-motion'
+import { Link } from 'react-router-dom'
+import useCourseLogo from '../../hooks/useCourseLogo'
+import { FiStar, FiUsers, FiClock, FiArrowRight } from 'react-icons/fi'
+
+const difficultyConfig = {
+  beginner: { label: 'Beginner', class: 'bg-green-500/15 text-green-400 border-green-500/20' },
+  intermediate: { label: 'Intermediate', class: 'bg-amber-400/15 text-amber-400 border-amber-400/20' },
+  advanced: { label: 'Advanced', class: 'bg-red-500/15 text-red-400 border-red-500/20' },
+}
+
+// Subtle tinted left-border accent per card index cycle — injected by CourseList
+const ACCENT_BORDERS = [
+  'border-l-blue-500',
+  'border-l-amber-400',
+  'border-l-emerald-500',
+  'border-l-violet-500',
+  'border-l-rose-500',
+  'border-l-cyan-500',
+]
+
+const difficultyConfigLight = {
+  beginner: { label: 'Beginner', class: 'bg-green-100 text-green-700 border-green-200' },
+  intermediate: { label: 'Intermediate', class: 'bg-amber-100 text-amber-700 border-amber-200' },
+  advanced: { label: 'Advanced', class: 'bg-red-100 text-red-700 border-red-200' },
+}
+
+const CourseCard = ({ course, index = 0, showInstructor = true, showRating = true, variant = 'dark' }) => {
+  const isLight = variant === 'light'
+  const { logoUrl } = useCourseLogo(course.id, !!course.logo)
+  const difficulty = (isLight ? difficultyConfigLight : difficultyConfig)[course.difficulty] || (isLight ? difficultyConfigLight : difficultyConfig)['beginner']
+  const thumbnail = (course.logo && logoUrl) ? logoUrl : course.thumbnail || null
+  const accent = ACCENT_BORDERS[index % ACCENT_BORDERS.length]
+
+  const numericRating = (() => {
+    const r = course.average_rating
+    return r && typeof r === 'number' && !isNaN(r) ? r : 0
+  })()
+
+  return (
+    <motion.div
+      whileHover={{ y: -6, scale: 1.01 }}
+      transition={{ duration: 0.22 }}
+      className={`border border-l-4 ${accent} rounded-2xl overflow-hidden group transition-all duration-300 flex flex-col w-full ${
+        isLight
+          ? 'bg-white border-gray-200 hover:border-indigo-200 hover:shadow-xl shadow-sm'
+          : 'bg-slate-900 border-slate-800 hover:border-slate-700 hover:shadow-2xl hover:shadow-black/30'
+      }`}
+    >
+      <Link to={`/courses/${course.id}`} className="flex flex-col flex-1">
+
+        {/* Thumbnail */}
+        <div className="relative overflow-hidden h-44">
+          {thumbnail ? (
+            <img
+              src={thumbnail}
+              alt={course.title}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 opacity-90 group-hover:opacity-100"
+            />
+          ) : (
+            /* Premium dark fallback with amber dot-grid & glow */
+            <div className={`w-full h-full flex items-center justify-center relative overflow-hidden ${isLight ? 'bg-gradient-to-br from-indigo-50 to-violet-100' : ''}`} style={isLight ? undefined : { background: '#0A0F1E' }}>
+              <div className="absolute inset-0 opacity-[0.07]" style={{
+                backgroundImage: 'radial-gradient(circle, #fbbf24 1px, transparent 1px)',
+                backgroundSize: '22px 22px'
+              }} />
+              <div className="absolute inset-0" style={{
+                background: 'radial-gradient(ellipse at 50% 70%, rgba(251,191,36,0.14) 0%, transparent 65%)'
+              }} />
+              <div className="relative z-10">
+                <div
+                  className="w-16 h-16 rounded-xl flex items-center justify-center mx-auto"
+                  style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.18)' }}
+                >
+                  <span className={`text-3xl font-black ${isLight ? 'text-indigo-600' : 'text-amber-400'}`}>{course.title?.charAt(0)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Overlay gradient */}
+          <div className={`absolute inset-0 bg-gradient-to-t ${isLight ? 'from-indigo-900/20' : 'from-slate-900/80'} via-transparent to-transparent`} />
+
+          {/* Difficulty badge */}
+          <div className="absolute top-3 left-3">
+            <span className={`px-2 py-1 text-[10px] font-bold rounded-lg border backdrop-blur-sm ${difficulty.class}`}>
+              {difficulty.label}
+            </span>
+          </div>
+
+          {/* Live/Draft badge */}
+          <div className="absolute top-3 right-3">
+            <span className={`px-2 py-1 text-[10px] font-bold rounded-lg backdrop-blur-sm ${course.is_published
+              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : 'bg-slate-700 text-slate-400 border border-slate-600'
+              }`}>
+              {course.is_published ? '● Live' : 'Draft'}
+            </span>
+          </div>
+        </div>
+
+        {/* Card Body */}
+        <div className="p-5 flex flex-col flex-1">
+
+          {/* Category + student count */}
+          <div className="flex items-center justify-between mb-3">
+            <span className={`text-xs font-black px-2.5 py-1 rounded-full tracking-wide ${
+              isLight ? 'text-indigo-700 bg-indigo-50 border border-indigo-100' : 'text-amber-400 bg-amber-400/10 border border-amber-400/15'
+            }`}>
+              {course.category}
+            </span>
+            <span className="flex items-center gap-1 text-xs text-slate-500">
+              <FiUsers className="w-3 h-3" />
+              {course.enrollment_count || 0}
+            </span>
+          </div>
+
+          {/* Title */}
+          <h3 className={`text-[15px] font-black mb-2 line-clamp-2 transition-colors duration-200 leading-tight ${
+            isLight ? 'text-gray-900 group-hover:text-indigo-600' : 'text-white group-hover:text-amber-400'
+          }`}>
+            {course.title}
+          </h3>
+
+          {/* Description */}
+          <p className={`text-xs mb-4 line-clamp-2 leading-relaxed flex-1 ${isLight ? 'text-gray-600' : 'text-slate-400'}`}>
+            {course.description}
+          </p>
+
+          {/* Instructor */}
+          {showInstructor && course.instructor && (
+            <div className={`flex items-center gap-2 mb-4 pb-4 border-b ${isLight ? 'border-gray-100' : 'border-slate-800'}`}>
+              <img
+                src={course.instructor.avatar || `https://ui-avatars.com/api/?name=${course.instructor.name}&background=0f172a&color=fbbf24&bold=true`}
+                alt={course.instructor.name}
+                className="w-6 h-6 rounded-full object-cover border border-slate-700"
+              />
+              <span className={`text-xs font-medium ${isLight ? 'text-gray-600' : 'text-slate-400'}`}>{course.instructor.name}</span>
+            </div>
+          )}
+
+          {/* Footer: Rating + Duration + Arrow */}
+          <div className="flex items-center justify-between mt-auto gap-2">
+            {showRating && (
+              <div className="flex items-center gap-0.5">
+                {[...Array(5)].map((_, i) => (
+                  <FiStar
+                    key={i}
+                    className={`w-3 h-3 ${i < Math.floor(numericRating) ? 'text-amber-400' : isLight ? 'text-gray-300' : 'text-slate-700'}`}
+                    style={{ fill: i < Math.floor(numericRating) ? 'currentColor' : 'none' }}
+                  />
+                ))}
+                <span className={`text-xs font-bold ml-1 ${isLight ? 'text-gray-900' : 'text-white'}`}>{numericRating.toFixed(1)}</span>
+                <span className={`text-xs ml-0.5 ${isLight ? 'text-gray-500' : 'text-slate-600'}`}>({course.total_ratings || 0})</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 ml-auto">
+              {course.estimated_duration && (
+                <span className="flex items-center gap-1 text-xs text-slate-500">
+                  <FiClock className="w-3 h-3" />
+                  {course.estimated_duration}h
+                </span>
+              )}
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all duration-300 ${
+                isLight
+                  ? 'bg-indigo-50 border border-indigo-100 group-hover:bg-indigo-600 group-hover:border-indigo-600'
+                  : 'bg-amber-400/10 border border-amber-400/15 group-hover:bg-amber-400 group-hover:border-amber-400'
+              }`}>
+                <FiArrowRight className={`w-3.5 h-3.5 transition-colors ${
+                  isLight ? 'text-indigo-600 group-hover:text-white' : 'text-amber-400 group-hover:text-slate-900'
+                }`} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </Link>
+    </motion.div>
+  )
+}
+
+export default CourseCard
