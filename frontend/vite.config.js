@@ -14,6 +14,9 @@ export default defineConfig({
       }
     }
   },
+  preview: {
+    allowedHosts: ['lms-sankalp-frontend-docker.onrender.com']
+  },
   build: {
     outDir: 'dist',
     sourcemap: true
