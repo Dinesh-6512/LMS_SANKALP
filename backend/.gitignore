@@ -99,7 +99,6 @@ ecosystem.config.js
 
 # Docker files (if using Docker)
 .dockerignore
-Dockerfile
 docker-compose.yml
 docker-compose.*.yml
 

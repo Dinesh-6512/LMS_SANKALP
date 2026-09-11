@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: lms-sankalp-backend
+    ports:
+      - "5001:5001"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/database.sqlite:/app/database.sqlite
+      - ./backend/uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: lms-sankalp-frontend
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend

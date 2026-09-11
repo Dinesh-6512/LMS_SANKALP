@@ -8,7 +8,7 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:5001',
+        target: process.env.DOCKER_BACKEND_URL || 'http://localhost:5001',
         changeOrigin: true,
         secure: false
       }
